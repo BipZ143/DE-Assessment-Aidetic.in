@@ -1,0 +1,70 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+from pyspark.streaming import StreamingContext
+from pyspark.streaming.kafka import KafkaUtils
+from kafka import KafkaProducer
+from elasticsearch import Elasticsearch
+import cx_Oracle
+
+# Define the Oracle database connection details
+oracle_host = "localhost"
+oracle_port = 1521
+oracle_sid = "oracle_sid"
+oracle_user = "oracle_username"
+oracle_password = "oracle_password"
+
+# Define the schema for clickstream data
+clickstream_schema = "id STRING, user_id STRING, timestamp STRING, url STRING, country STRING, city STRING, browser STRING, os STRING, device STRING"
+
+# Create a SparkSession
+spark = SparkSession.builder.appName("ClickstreamDataPipeline").getOrCreate()
+
+# Create a StreamingContext with a batch interval of 1 second
+streaming_context = StreamingContext(spark.sparkContext, 1)
+
+# Read the clickstream data from Kafka
+kafka_params = {"bootstrap.servers": "localhost:9092", "subscribe": "clickstream_topic"}
+clickstream_data = KafkaUtils.createDirectStream(streaming_context, ["clickstream_topic"], kafka_params).map(lambda x: x[1])
+
+# Process the clickstream data and store it in Oracle
+def process_and_store_data(rdd):
+    # Convert RDD to DataFrame
+    clickstream_df = spark.createDataFrame(rdd, schema=clickstream_schema)
+    
+    # Store the clickstream data in Oracle
+    clickstream_df.write.format("jdbc").options(
+        url=f"jdbc:oracle:thin:@{oracle_host}:{oracle_port}/{oracle_sid}",
+        driver="oracle.jdbc.driver.OracleDriver",
+        dbtable="clickstream_table",
+        user=oracle_user,
+        password=oracle_password).mode("append").save()
+    
+    # Process the stored clickstream data
+    processed_data = clickstream_df.groupBy("url", "country").agg(
+        {"id": "count", "user_id": "approxCountDistinct", "timestamp": "avg"}).\
+        withColumnRenamed("count(id)", "clicks").\
+        withColumnRenamed("approxCountDistinct(user_id)", "unique_users").\
+        withColumnRenamed("avg(timestamp)", "avg_time_spent")
+    
+    # Index the processed data in Elasticsearch
+    es = Elasticsearch(["localhost:9200"])
+    processed_data.foreachPartition(lambda partition: index_to_elasticsearch(partition, es))
+
+# Function to index data in Elasticsearch
+def index_to_elasticsearch(rows, es):
+    for row in rows:
+        doc = {
+            "url": row["url"],
+            "country": row["country"],
+            "clicks": row["clicks"],
+            "unique_users": row["unique_users"],
+            "avg_time_spent": row["avg_time_spent"]
+        }
+        es.index(index="processed_clickstream_data", body=doc)
+
+# Start the data processing and indexing
+clickstream_data.foreachRDD(process_and_store_data)
+
+# Start the streaming context
+streaming_context.start()
+streaming_context.awaitTermination()
