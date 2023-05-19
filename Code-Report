@@ -25,7 +25,7 @@ Data Indexing:
 Used Elasticsearch as the indexing and search engine to enable efficient querying and analysis of the processed clickstream data.
 Employed the Elasticsearch Python client library to establish a connection with the Elasticsearch cluster.
 Created an Elasticsearch index with appropriate mappings to define the structure of the indexed data.
-Iterated through the processed data and indexed each record into Elasticsearch using the index() method.
+Iterated through the processed data and indexed each record into Elasticsearch using the index() method. 
 
 Assumptions Made:
 
